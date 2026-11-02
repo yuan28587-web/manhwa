@@ -77,11 +77,15 @@ const clean=s=>s.replace(/[^가-힣0-9\s.,!?~…'"()\-]/g,'').replace(/\s+/g,' '
 const hcount=s=>(s.match(/[가-힣]/g)||[]).length;
 const okLine=s=>{const k=hcount(s);return k>=1&&k>=s.replace(/\s/g,'').length*.4};
 
-/* 找"浅色底上的深色笔画"聚成的文字块：不要求气泡封闭，贴着白边、白色背景上的字也能找到 */
-function findBlocks(p,W,H,atTop,atBot){
+/* 找"浅色底上的深色笔画"聚成的文字块：不要求气泡封闭，贴着白边、白色背景上的字也能找到。inv=1 时反过来找深色底上的浅色字 */
+function findBlocks(p,W,H,atTop,atBot,inv){
   const st=Math.max(2,Math.round(W/400)),gw=Math.floor(W/st),gh=Math.floor(H/st),N=gw*gh,G=gw+1;
   const wh=new Uint8Array(N),dk=new Uint8Array(N),cand=new Uint8Array(N),m=new Uint8Array(N),lab=new Int32Array(N),q=new Int32Array(N);
-  for(let y=0;y<gh;y++)for(let x=0;x<gw;x++){const v=p[(y*st*W+x*st)*4];wh[y*gw+x]=v>225?1:0;dk[y*gw+x]=v<110?1:0}
+  for(let y=0;y<gh;y++)for(let x=0;x<gw;x++){
+    let mn=255,sm=0;
+    for(let yy=0;yy<st;yy++)for(let xx=0;xx<st;xx++){let v=p[((y*st+yy)*W+x*st+xx)*4];if(inv)v=255-v;if(v<mn)mn=v;sm+=v}
+    wh[y*gw+x]=sm/(st*st)>215?1:0;dk[y*gw+x]=mn<150?1:0;
+  }
   const L=22,kill=new Uint8Array(N);
   for(let y=0;y<gh;y++){let s=0;for(let x=0;x<=gw;x++){if(x<gw&&dk[y*gw+x])continue;if(x-s>L)for(let k=s;k<x;k++)kill[y*gw+k]=1;s=x+1}}
   for(let x=0;x<gw;x++){let s=0;for(let y=0;y<=gh;y++){if(y<gh&&dk[y*gw+x])continue;if(y-s>L)for(let k=s;k<y;k++)kill[k*gw+x]=1;s=y+1}}
@@ -90,7 +94,7 @@ function findBlocks(p,W,H,atTop,atBot){
   const box=(I,x0,y0,x1,y1)=>{x0=Math.max(0,x0);y0=Math.max(0,y0);x1=Math.min(gw,x1);y1=Math.min(gh,y1);return[I[y1*G+x1]-I[y0*G+x1]-I[y1*G+x0]+I[y0*G+x0],(x1-x0)*(y1-y0)]};
   const IW=integ(wh),R=6;
   for(let y=0;y<gh;y++)for(let x=0;x<gw;x++){const i=y*gw+x;if(!dk[i])continue;const[s,a]=box(IW,x-R,y-R,x+R+1,y+R+1);if(s>=a*.45)cand[i]=1}
-  const IC=integ(cand),DX=5,DY=4;
+  const IC=integ(cand),DX=6,DY=4;
   for(let y=0;y<gh;y++)for(let x=0;x<gw;x++)m[y*gw+x]=box(IC,x-DX,y-DY,x+DX+1,y+DY+1)[0]>0?1:0;
   const out=[];let n=0;
   for(let i=0;i<N;i++){
@@ -104,21 +108,21 @@ function findBlocks(p,W,H,atTop,atBot){
       if(y>0&&m[j-gw]&&!lab[j-gw]){lab[j-gw]=n;q[tl++]=j-gw}
       if(y<gh-1&&m[j+gw]&&!lab[j+gw]){lab[j+gw]=n;q[tl++]=j+gw}
     }
-    if(cnt<12)continue;
+    if(cnt<8)continue;
     const bw=x1-x0+1,bh=y1-y0+1,den=cnt/(bw*bh);
-    if(bw<4||bh<4||den<.04||den>.6)continue;
-    if((bh<=3&&bw>20)||(bw<=3&&bh>20)||bw>gw*.95)continue;
+    if(bw<4||bh<5||den<.04||den>.85)continue;
+    if((bh<=3&&bw>25)||(bw<=3&&bh>20)||bw>gw*.95)continue;
     if((!atTop&&y0<=1)||(!atBot&&y1>=gh-2))continue;
-    out.push({x:x0*st,y:y0*st,w:bw*st,h:bh*st});
+    out.push({x:x0*st,y:y0*st,w:bw*st,h:bh*st,inv:inv?1:0});
   }
-  const gap=st*3;
+  const gap=st*4;
   for(let ch=1;ch;){
     ch=0;
     for(let i=0;i<out.length&&!ch;i++)for(let j=i+1;j<out.length;j++){
       const a=out[i],b=out[j];
-      if(a.x-gap<b.x+b.w&&b.x-gap<a.x+a.w&&a.y-gap<b.y+b.h&&b.y-gap<a.y+a.h){
+      if(a.x-gap<b.x+b.w&&b.x-gap<a.x+a.w&&a.y-gap/2<b.y+b.h&&b.y-gap/2<a.y+a.h){
         const x=Math.min(a.x,b.x),y=Math.min(a.y,b.y);
-        out[i]={x,y,w:Math.max(a.x+a.w,b.x+b.w)-x,h:Math.max(a.y+a.h,b.y+b.h)-y};out.splice(j,1);ch=1;break;
+        out[i]={x,y,w:Math.max(a.x+a.w,b.x+b.w)-x,h:Math.max(a.y+a.h,b.y+b.h)-y,inv:a.inv};out.splice(j,1);ch=1;break;
       }
     }
   }
@@ -140,17 +144,19 @@ async function ocrTile(t){
   const d=x.getImageData(0,0,c.width,c.height),p=d.data;
   for(let i=0;i<p.length;i+=4){let g=.299*p[i]+.587*p[i+1]+.114*p[i+2];g=(g-128)*1.35+128;g=g<0?0:g>255?255:g;p[i]=p[i+1]=p[i+2]=g}
   x.putImageData(d,0,0);
-  const B=findBlocks(p,c.width,c.height,t.y0===0&&!t.prev,t.y1>=t.h&&!nx).filter(b=>b.y<bnd),G=[];
+  const tp=t.y0===0&&!t.prev,bt=t.y1>=t.h&&!nx;
+  const B=findBlocks(p,c.width,c.height,tp,bt,0).concat(S.fine?findBlocks(p,c.width,c.height,tp,bt,1):[]).filter(b=>b.y<bnd),G=[];
   if(B.length){
     await S.worker.setParameters({tessedit_pageseg_mode:'6'});
     for(const b of B){
       const pad=14,k=Math.min(2.5,Math.max(1,64/b.h)),bx=Math.max(0,b.x-6),by=Math.max(0,b.y-6),bw=Math.min(c.width-bx,b.w+12),bh=Math.min(c.height-by,b.h+12);
       const cc=E('canvas');cc.width=Math.round(bw*k)+pad*2;cc.height=Math.round(bh*k)+pad*2;
-      const cx=cc.getContext('2d');cx.fillStyle='#fff';cx.fillRect(0,0,cc.width,cc.height);
+      const cx=cc.getContext('2d',{willReadFrequently:true});cx.fillStyle=b.inv?'#000':'#fff';cx.fillRect(0,0,cc.width,cc.height);
       cx.imageSmoothingQuality='high';cx.drawImage(c,bx,by,bw,bh,pad,pad,bw*k,bh*k);
+      if(b.inv){const id=cx.getImageData(0,0,cc.width,cc.height),v=id.data;for(let i=0;i<v.length;i+=4){v[i]=v[i+1]=v[i+2]=255-v[i]}cx.putImageData(id,0,0)}
       const r=(await S.worker.recognize(cc)).data;
       const txt=(r.lines||[]).filter(l=>l.confidence>=15).map(l=>clean(l.text)).filter(okLine).join(' ');
-      if(hcount(txt)>=2)G.push({t:[txt],x0:bx,x1:bx+bw,y0:by,y1:by+bh});
+      if(hcount(txt)>=1)G.push({t:[txt],x0:bx,x1:bx+bw,y0:by,y1:by+bh});
     }
     await S.worker.setParameters({tessedit_pageseg_mode:'11'});
   }
@@ -167,7 +173,7 @@ async function ocrTile(t){
     }
     G.push(...F);
   }
-  return G.sort((a,b)=>a.y0-b.y0).map(g=>({ko:g.t.join(' '),el:t.el,src:srcOf(t.el),nx:g.x0/sc,ny:t.y0+g.y0/sc,nw:(g.x1-g.x0)/sc,nh:(g.y1-g.y0)/sc})).filter(it=>hcount(it.ko)>=2);
+  return G.sort((a,b)=>a.y0-b.y0).map(g=>({ko:g.t.join(' '),el:t.el,src:srcOf(t.el),nx:g.x0/sc,ny:t.y0+g.y0/sc,nw:(g.x1-g.x0)/sc,nh:(g.y1-g.y0)/sc})).filter(it=>hcount(it.ko)>=1);
 }
 
 /* 按位置去重：重叠的分块里同一句只翻一次 */
