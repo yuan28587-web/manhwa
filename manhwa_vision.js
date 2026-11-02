@@ -74,6 +74,58 @@ function tilesFor(el){
   return res;
 }
 
+/* 找"浅色底上的深色笔画"聚成的文字块：不要求气泡封闭，贴着白边、白色背景上的字也能找到。inv=1 时反过来找深色底上的浅色字 */
+function findBlocks(p,W,H,atTop,atBot,inv){
+  const st=Math.max(2,Math.round(W/400)),gw=Math.floor(W/st),gh=Math.floor(H/st),N=gw*gh,G=gw+1;
+  const wh=new Uint8Array(N),dk=new Uint8Array(N),cand=new Uint8Array(N),m=new Uint8Array(N),lab=new Int32Array(N),q=new Int32Array(N);
+  for(let y=0;y<gh;y++)for(let x=0;x<gw;x++){
+    let mn=255,sm=0;
+    for(let yy=0;yy<st;yy++)for(let xx=0;xx<st;xx++){let v=p[((y*st+yy)*W+x*st+xx)*4];if(inv)v=255-v;if(v<mn)mn=v;sm+=v}
+    wh[y*gw+x]=sm/(st*st)>215?1:0;dk[y*gw+x]=mn<150?1:0;
+  }
+  const L=22,kill=new Uint8Array(N);
+  for(let y=0;y<gh;y++){let s=0;for(let x=0;x<=gw;x++){if(x<gw&&dk[y*gw+x])continue;if(x-s>L)for(let k=s;k<x;k++)kill[y*gw+k]=1;s=x+1}}
+  for(let x=0;x<gw;x++){let s=0;for(let y=0;y<=gh;y++){if(y<gh&&dk[y*gw+x])continue;if(y-s>L)for(let k=s;k<y;k++)kill[k*gw+x]=1;s=y+1}}
+  for(let i=0;i<N;i++)if(kill[i])dk[i]=0;
+  const integ=a=>{const I=new Int32Array(G*(gh+1));for(let y=0;y<gh;y++){let s=0;for(let x=0;x<gw;x++){s+=a[y*gw+x];I[(y+1)*G+x+1]=I[y*G+x+1]+s}}return I};
+  const box=(I,x0,y0,x1,y1)=>{x0=Math.max(0,x0);y0=Math.max(0,y0);x1=Math.min(gw,x1);y1=Math.min(gh,y1);return[I[y1*G+x1]-I[y0*G+x1]-I[y1*G+x0]+I[y0*G+x0],(x1-x0)*(y1-y0)]};
+  const IW=integ(wh),R=6;
+  for(let y=0;y<gh;y++)for(let x=0;x<gw;x++){const i=y*gw+x;if(!dk[i])continue;const[s,a]=box(IW,x-R,y-R,x+R+1,y+R+1);if(s>=a*.45)cand[i]=1}
+  const IC=integ(cand),DX=6,DY=4;
+  for(let y=0;y<gh;y++)for(let x=0;x<gw;x++)m[y*gw+x]=box(IC,x-DX,y-DY,x+DX+1,y+DY+1)[0]>0?1:0;
+  const out=[];let n=0;
+  for(let i=0;i<N;i++){
+    if(!m[i]||lab[i])continue;
+    n++;let h=0,tl=0,cnt=0,x0=gw,x1=-1,y0=gh,y1=-1;q[tl++]=i;lab[i]=n;
+    while(h<tl){
+      const j=q[h++],y=Math.floor(j/gw),x=j-y*gw;
+      if(cand[j]){cnt++;if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y}
+      if(x>0&&m[j-1]&&!lab[j-1]){lab[j-1]=n;q[tl++]=j-1}
+      if(x<gw-1&&m[j+1]&&!lab[j+1]){lab[j+1]=n;q[tl++]=j+1}
+      if(y>0&&m[j-gw]&&!lab[j-gw]){lab[j-gw]=n;q[tl++]=j-gw}
+      if(y<gh-1&&m[j+gw]&&!lab[j+gw]){lab[j+gw]=n;q[tl++]=j+gw}
+    }
+    if(cnt<8)continue;
+    const bw=x1-x0+1,bh=y1-y0+1,den=cnt/(bw*bh);
+    if(bw<4||bh<5||den<.04||den>.85)continue;
+    if((bh<=3&&bw>25)||(bw<=3&&bh>20)||bw>gw*.95)continue;
+    if((!atTop&&y0<=1)||(!atBot&&y1>=gh-2))continue;
+    out.push({x:x0*st,y:y0*st,w:bw*st,h:bh*st,inv:inv?1:0});
+  }
+  const gap=st*4;
+  for(let ch=1;ch;){
+    ch=0;
+    for(let i=0;i<out.length&&!ch;i++)for(let j=i+1;j<out.length;j++){
+      const a=out[i],b=out[j];
+      if(a.x-gap<b.x+b.w&&b.x-gap<a.x+a.w&&a.y-gap/2<b.y+b.h&&b.y-gap/2<a.y+a.h){
+        const x=Math.min(a.x,b.x),y=Math.min(a.y,b.y);
+        out[i]={x,y,w:Math.max(a.x+a.w,b.x+b.w)-x,h:Math.max(a.y+a.h,b.y+b.h)-y,inv:a.inv};out.splice(j,1);ch=1;break;
+      }
+    }
+  }
+  return out.sort((a,b)=>a.y-b.y).slice(0,25);
+}
+
 /* 剪出这一段画面（末段会接上下一张图的开头），压成 JPEG */
 async function snap(t){
   const src=await getSrc(t.el);if(!src)throw Error('CORS');
@@ -85,18 +137,25 @@ async function snap(t){
   const x=c.getContext('2d');x.imageSmoothingQuality='high';
   x.drawImage(src,0,t.y0,t.w,th,0,0,c.width,Math.round(th*sc));
   if(ext)x.drawImage(ns,0,0,nw,ext*nw/t.w,0,Math.round(th*sc),c.width,c.height-Math.round(th*sc));
+  /* 省钱：先在手机上粗查一遍，找不到任何文字的画面就不发给 AI */
+  const g=x.getImageData(0,0,c.width,c.height).data,q=new Uint8ClampedArray(g.length);
+  for(let i=0;i<g.length;i+=4){let v=.299*g[i]+.587*g[i+1]+.114*g[i+2];v=(v-128)*1.35+128;q[i]=v<0?0:v>255?255:v}
+  const bnd=th*sc,has=findBlocks(q,c.width,c.height,1,1,0).some(b=>b.y<bnd)||findBlocks(q,c.width,c.height,1,1,1).some(b=>b.y<bnd);
+  if(!has)return null;
   return {b64:c.toDataURL('image/jpeg',.85).split(',')[1],th,ext};
 }
 
 const SYS='你是韩国条漫的中文翻译。译文要自然、口语化，贴合人物语气，称呼、语气词、网络用语要地道，不要翻译腔；拟声词译成对应的中文拟声词。';
 const ASK='图中是条漫的一段。找出图中所有韩文：对话气泡、旁白、画面上的字、手写字、拟声词都要。被图片上边缘或下边缘截断、显示不完整的文字不要输出。按从上到下的顺序，每条给出：ko 为原文，zh 为简体中文译文，box 为这段文字所在区域 [ymin,xmin,ymax,xmax]，按 0 到 1000 归一化。只输出 JSON 数组，例如 [{"ko":"…","zh":"…","box":[120,300,180,700]}]；没有韩文就输出 []。';
 const THINK=[{thinkingConfig:{thinkingBudget:0}},{thinkingConfig:{thinkingLevel:'low'}},{}];
+/* 依次尝试：指定看图档位+关思考 … 都不支持就逐步退回默认 */
 async function askOnce(b64){
   const ctx=hist.slice(-8).map(h=>h.ko+' => '+h.zh).join('\n');
-  const ti=cfg.think||0;
+  const at=cfg.att||0,gc=Object.assign({temperature:.3,responseMimeType:'application/json'},THINK[at%3]);
+  if(at<3)gc.mediaResolution=S.hi?'MEDIA_RESOLUTION_HIGH':'MEDIA_RESOLUTION_MEDIUM';
   const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(cfg.model)+':generateContent',{method:'POST',headers:{'content-type':'application/json','x-goog-api-key':cfg.key},
-    body:JSON.stringify({systemInstruction:{parts:[{text:SYS}]},contents:[{role:'user',parts:[{inline_data:{mime_type:'image/jpeg',data:b64}},{text:(ctx?'前文（仅供参考，不要输出）：\n'+ctx+'\n\n':'')+ASK}]}],generationConfig:Object.assign({temperature:.3,responseMimeType:'application/json'},THINK[ti])})});
-  if(r.status===400&&ti<2){cfg.think=ti+1;return askOnce(b64)}
+    body:JSON.stringify({systemInstruction:{parts:[{text:SYS}]},contents:[{role:'user',parts:[{inline_data:{mime_type:'image/jpeg',data:b64}},{text:(ctx?'前文（仅供参考，不要输出）：\n'+ctx+'\n\n':'')+ASK}]}],generationConfig:gc})});
+  if(r.status===400&&at<5){cfg.att=at+1;return askOnce(b64)}
   const j=await r.json().catch(()=>({}));
   if(!r.ok)throw Object.assign(Error(String(r.status)),{code:r.status});
   const txt=((j.candidates||[])[0]?.content?.parts||[]).map(x=>x.text||'').join('');
@@ -121,7 +180,8 @@ function fresh(it){
 }
 
 async function doTile(t){
-  const {b64,th,ext}=await snap(t);
+  const sn=await snap(t);if(!sn)return;
+  const {b64,th,ext}=sn;
   const res=await ask(b64);S.err='';
   if(!S.on)return;
   const H=th+ext,got=[];
