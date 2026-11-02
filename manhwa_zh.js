@@ -50,13 +50,24 @@ function candidates(){
     return r.width>=200&&r.bottom>0&&r.top<innerHeight*2;
   });
 }
+/* 网站常把长条漫切成多张图上下拼接：找紧挨着的上一张/下一张 */
+function adj(el,dir){
+  const r=el.getBoundingClientRect();
+  for(const e of document.querySelectorAll('img,canvas')){
+    if(e===el||box.contains(e)||layer.contains(e))continue;
+    if(e.tagName==='IMG'&&!e.complete)continue;
+    const q=e.getBoundingClientRect();
+    if(Math.abs(q.left-r.left)<4&&Math.abs(q.width-r.width)<4&&Math.abs(dir>0?q.top-r.bottom:r.top-q.bottom)<4)return e;
+  }
+  return null;
+}
 function tilesFor(el){
   const [w,h]=natSize(el),r=el.getBoundingClientRect(),k=h/r.height;
   const vt=Math.max(0,-r.top)*k,vb=Math.min(r.height,innerHeight*2-r.top)*k,vc=(vt+Math.min(r.height,innerHeight-r.top)*k)/2;
   const T=Math.min(h,Math.round(w*1.3)),step=Math.round(T*.6),res=[];
   for(let y=0;;y+=step){
     const y1=Math.min(h,y+T),y0=Math.max(0,y1-T);
-    if(y1>vt&&y0<vb)res.push({el,w,h,y0,y1,key:srcOf(el)+':'+y0,dist:Math.abs((y0+y1)/2-vc)/k});
+    if(y1>vt&&y0<vb)res.push({el,w,h,y0,y1,prev:y0===0&&!!adj(el,-1),key:srcOf(el)+':'+y0,dist:Math.abs((y0+y1)/2-vc)/k});
     if(y1>=h)break;
   }
   return res;
@@ -117,15 +128,19 @@ function findBlocks(p,W,H,atTop,atBot){
 async function ocrTile(t){
   const src=await getSrc(t.el);
   if(!src)throw Error('CORS');
-  const sc=Math.max(1,Math.min(2,(S.fine?1600:1200)/t.w));
-  const c=E('canvas');c.width=Math.round(t.w*sc);c.height=Math.round((t.y1-t.y0)*sc);
+  const sc=Math.max(1,Math.min(2,(S.fine?1600:1200)/t.w)),th=t.y1-t.y0;
+  let nx=t.y1>=t.h?adj(t.el,1):null,ns=null,ext=0,nw=0;
+  if(nx){ns=await getSrc(nx);if(ns){const[a,b]=natSize(nx);nw=a;ext=Math.min(b*t.w/a,th*.5)}else nx=null}
+  const c=E('canvas');c.width=Math.round(t.w*sc);c.height=Math.round((th+ext)*sc);
   const x=c.getContext('2d',{willReadFrequently:true});
   x.imageSmoothingQuality='high';
-  x.drawImage(src,0,t.y0,t.w,t.y1-t.y0,0,0,c.width,c.height);
+  x.drawImage(src,0,t.y0,t.w,th,0,0,c.width,Math.round(th*sc));
+  if(ext)x.drawImage(ns,0,0,nw,ext*nw/t.w,0,Math.round(th*sc),c.width,c.height-Math.round(th*sc));
+  const bnd=th*sc;
   const d=x.getImageData(0,0,c.width,c.height),p=d.data;
   for(let i=0;i<p.length;i+=4){let g=.299*p[i]+.587*p[i+1]+.114*p[i+2];g=(g-128)*1.35+128;g=g<0?0:g>255?255:g;p[i]=p[i+1]=p[i+2]=g}
   x.putImageData(d,0,0);
-  const B=findBlocks(p,c.width,c.height,t.y0===0,t.y1>=t.h),G=[];
+  const B=findBlocks(p,c.width,c.height,t.y0===0&&!t.prev,t.y1>=t.h&&!nx).filter(b=>b.y<bnd),G=[];
   if(B.length){
     await S.worker.setParameters({tessedit_pageseg_mode:'6'});
     for(const b of B){
@@ -142,7 +157,7 @@ async function ocrTile(t){
   if(S.fine||!B.length){
     const {data}=await S.worker.recognize(c);
     const inG=b=>{const mx=(b.x0+b.x1)/2,my=(b.y0+b.y1)/2;return G.some(g=>mx>g.x0&&mx<g.x1&&my>g.y0&&my<g.y1)};
-    const L=(data.lines||[]).map(l=>({t:clean(l.text),c:l.confidence,b:l.bbox})).filter(l=>l.c>=35&&okLine(l.t)&&!inG(l.b)).sort((a,b)=>a.b.y0-b.b.y0);
+    const L=(data.lines||[]).map(l=>({t:clean(l.text),c:l.confidence,b:l.bbox})).filter(l=>l.c>=35&&okLine(l.t)&&!inG(l.b)&&l.b.y0<bnd).sort((a,b)=>a.b.y0-b.b.y0);
     const F=[];
     for(const l of L){
       const lh=l.b.y1-l.b.y0;
